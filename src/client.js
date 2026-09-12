@@ -19,10 +19,11 @@
  * batch minutes late; chiming then would be noise, and the Host already covered
  * it. Those entries still land in the panel log.
  *
- * Two surfaces, both rendered from encoded data only (no model is involved):
- *   - a control panel in tool.view.cordis
- *   - a bottom-right toast stack in shell.overlay, one card per alert, showing
- *     app / workspace / session / main-or-subagent, all computed Host-side.
+ * Two popups exist, on purpose, and they are independent:
+ *   - the Windows notification, raised by the HOST half (it reaches the user
+ *     even when this page is not on screen), silent so the sound stays ours;
+ *   - the in-page stack below, which is the one that can be styled and clicked.
+ * Both are rendered from encoded data only. No model is involved anywhere.
  */
 
 return {
@@ -32,7 +33,7 @@ return {
     const STALE_MS = 5000
     const COALESCE_MS = 250
     const LOG_MAX = 12
-    const TOAST_MS = 7000
+    const TOAST_MS = 12000
     const TOAST_MAX = 4
 
     /** Two-note chimes: sine tones, no audio assets to fetch or decode. */
@@ -43,7 +44,7 @@ return {
       test: [523.25, 783.99, 1046.5],
     }
 
-    const LABELS = { approval: '审批', question: '提问', idle: '运行结束' }
+    const LABELS = { approval: '审批', question: '提问', idle: '运行结束', test: '测试' }
 
     const doc = typeof document === 'undefined' ? undefined : document
     const realm = typeof globalThis === 'undefined' ? undefined : globalThis
@@ -59,9 +60,11 @@ return {
     const state = {
       muted: false,
       fallback: true,
+      toast: true,
       shellAvailable: false,
       identityAvailable: false,
       systemSound: null,
+      toastOk: null,
       audioAvailable: true,
       chime: null,
       volume: 0.6,
@@ -246,9 +249,9 @@ return {
       if (state.muted) return
       if (at > 0 && Date.now() - at > STALE_MS) return
 
-      // The visual channel is shown for every fresh alert, not only when audio
-      // succeeded: if autoplay policy blocks the chime, the toast is the only
-      // thing this page can still deliver.
+      // The in-page popup is shown for every fresh alert, not only when audio
+      // succeeded: if autoplay policy blocks the chime, this visual is still
+      // something the page can deliver.
       showToast(signal, kind, detail)
 
       const now = Date.now()
@@ -278,9 +281,11 @@ return {
           patch({
             muted: typeof result.muted === 'boolean' ? result.muted : state.muted,
             fallback: typeof result.fallback === 'boolean' ? result.fallback : state.fallback,
+            toast: typeof result.toast === 'boolean' ? result.toast : state.toast,
             shellAvailable: result.shellAvailable === true,
             identityAvailable: result.identityAvailable === true,
             systemSound: typeof result.soundOk === 'boolean' ? result.soundOk : null,
+            toastOk: typeof result.toastOk === 'boolean' ? result.toastOk : null,
           })
         },
         function () {
@@ -315,7 +320,7 @@ return {
         [
           '.dac-root{font:12px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:inherit;',
           'border:1px solid rgba(127,127,127,.32);border-radius:10px;padding:10px 12px;margin:8px 0;',
-          'background:rgba(127,127,127,.07);max-width:560px}',
+          'background:rgba(127,127,127,.07);max-width:620px}',
           '.dac-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}',
           '.dac-dot{width:8px;height:8px;border-radius:50%;background:rgba(127,127,127,.45);flex:0 0 auto}',
           '.dac-dot[data-on="true"]{background:#2ecc71;box-shadow:0 0 0 3px rgba(46,204,113,.18)}',
@@ -336,25 +341,34 @@ return {
           '.dac-when{flex:0 0 auto;opacity:.55;font-variant-numeric:tabular-nums;font-size:11px}',
           '.dac-detail{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}',
           '.dac-empty{opacity:.55;border-top:none}',
-          // Toast stack. shell.overlay is click-through, so the container stays
-          // pointer-events:none and each card opts back in.
-          '@keyframes dac-toast-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
-          '.dac-toasts{position:fixed;right:16px;bottom:16px;z-index:40;display:flex;flex-direction:column;gap:8px;',
-          'align-items:flex-end;pointer-events:none;max-width:min(360px,46vw)}',
-          '.dac-toast{pointer-events:auto;cursor:pointer;min-width:250px;max-width:100%;box-sizing:border-box;',
-          'font:12px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#f4f4f5;',
-          'background:rgba(24,24,27,.94);border:1px solid rgba(255,255,255,.14);border-left:3px solid #2ecc71;',
-          'border-radius:10px;padding:9px 11px;box-shadow:0 10px 28px rgba(0,0,0,.34);',
-          'animation:dac-toast-in .18s ease-out}',
+          // The in-page popup stack. shell.overlay is click-through, so the
+          // container stays pointer-events:none and each card opts back in.
+          '@keyframes dac-toast-in{from{opacity:0;transform:translateY(16px) scale(.96)}to{opacity:1;transform:none}}',
+          '@keyframes dac-toast-glow{0%,100%{box-shadow:0 14px 38px rgba(0,0,0,.46)}',
+          '50%{box-shadow:0 14px 38px rgba(0,0,0,.46),0 0 0 5px rgba(46,204,113,.20)}}',
+          '@keyframes dac-toast-blink{0%,100%{opacity:1}50%{opacity:.22}}',
+          '.dac-toasts{position:fixed;right:18px;bottom:18px;z-index:45;display:flex;flex-direction:column;gap:10px;',
+          'align-items:flex-end;pointer-events:none;max-width:min(400px,50vw)}',
+          '.dac-toast{pointer-events:auto;cursor:pointer;min-width:340px;max-width:100%;box-sizing:border-box;',
+          'font:13px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#f6f6f7;',
+          'background:rgba(17,17,20,.97);border:1px solid rgba(255,255,255,.17);border-left:5px solid #2ecc71;',
+          'border-radius:12px;padding:12px 14px;box-shadow:0 14px 38px rgba(0,0,0,.46);',
+          'animation:dac-toast-in .2s ease-out,dac-toast-glow 1.7s ease-in-out 2}',
           '.dac-toast[data-kind="approval"]{border-left-color:#f1c40f}',
           '.dac-toast[data-kind="question"]{border-left-color:#3498db}',
-          '.dac-toast-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}',
-          '.dac-toast-app{font-weight:600;letter-spacing:.04em;padding:0 6px;border-radius:5px;',
-          'background:rgba(255,255,255,.14)}',
-          '.dac-toast-kind{font-weight:600}',
-          '.dac-toast-close{margin-left:auto;opacity:.5;font-size:14px;line-height:1}',
-          '.dac-toast-row{opacity:.86;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-          '.dac-toast-detail{margin-top:3px;padding-top:3px;border-top:1px solid rgba(255,255,255,.12);opacity:.72;',
+          '.dac-toast-head{display:flex;align-items:center;gap:8px;margin-bottom:7px;padding-bottom:7px;',
+          'border-bottom:1px solid rgba(255,255,255,.13)}',
+          '.dac-toast-dot{width:9px;height:9px;border-radius:50%;background:#2ecc71;flex:0 0 auto;',
+          'animation:dac-toast-blink 1.1s ease-in-out infinite}',
+          '.dac-toast[data-kind="approval"] .dac-toast-dot{background:#f1c40f}',
+          '.dac-toast[data-kind="question"] .dac-toast-dot{background:#3498db}',
+          '.dac-toast-app{font-weight:700;letter-spacing:.06em;padding:1px 7px;border-radius:5px;',
+          'background:rgba(255,255,255,.16)}',
+          '.dac-toast-kind{font-weight:700;font-size:13px}',
+          '.dac-toast-close{margin-left:auto;opacity:.5;font-size:15px;line-height:1}',
+          '.dac-toast-row{opacity:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+          '.dac-toast-row b{font-weight:600;opacity:.62;font-weight:400}',
+          '.dac-toast-detail{margin-top:5px;padding-top:5px;border-top:1px solid rgba(255,255,255,.13);opacity:.75;',
           'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
         ].join(''),
       )
@@ -396,6 +410,15 @@ return {
       return new Date(at).toLocaleTimeString()
     }
 
+    function row(key, label, value) {
+      return React.createElement(
+        'div',
+        { className: 'dac-toast-row', key: key },
+        React.createElement('b', null, label + ' · '),
+        value,
+      )
+    }
+
     function Toasts() {
       useVersion()
       if (state.toasts.length === 0) return null
@@ -417,17 +440,14 @@ return {
             },
             [
               React.createElement('div', { className: 'dac-toast-head', key: 'head' }, [
+                React.createElement('span', { className: 'dac-toast-dot', key: 'dot' }),
                 React.createElement('span', { className: 'dac-toast-app', key: 'app' }, toast.app),
                 React.createElement('span', { className: 'dac-toast-kind', key: 'kind' }, LABELS[toast.kind] || toast.kind),
                 React.createElement('span', { className: 'dac-toast-close', key: 'close' }, '×'),
               ]),
-              React.createElement('div', { className: 'dac-toast-row', key: 'workspace' }, '工作区 · ' + toast.workspace),
-              React.createElement('div', { className: 'dac-toast-row', key: 'session' }, '会话 · ' + toast.session),
-              React.createElement(
-                'div',
-                { className: 'dac-toast-row', key: 'role' },
-                '身份 · ' + roleText(toast) + ' · ' + clock(toast.at),
-              ),
+              row('workspace', '工作区', toast.workspace),
+              row('session', '会话', toast.session),
+              row('role', '身份', roleText(toast) + ' · ' + clock(toast.at)),
               toast.detail ? React.createElement('div', { className: 'dac-toast-detail', key: 'detail' }, toast.detail) : null,
             ],
           )
@@ -448,9 +468,15 @@ return {
 
       const fallbackNote = state.shellAvailable
         ? state.fallback
-          ? '页面隐藏/关闭或没响铃时，由 Host 调用 PowerShell 播放系统提示音'
+          ? '页面隐藏/关闭或没响铃时，由 Host 播放系统提示音兜底'
           : '系统提示音兜底已关闭'
         : 'Host 未提供 shell 服务，系统提示音兜底不可用'
+
+      const toastNote = state.shellAvailable
+        ? state.toast
+          ? '系统通知（消息中心）已开启，通知本身静音，声音仍用上面的铃声'
+          : '系统通知已关闭'
+        : 'Host 未提供 shell 服务，系统通知不可用'
 
       const entries =
         state.log.length === 0
@@ -476,13 +502,22 @@ return {
             chime('test')
           }),
           button(
-            '系统音',
+            '测试通知',
             function () {
-              callHost('test-system', {}).then(function (result) {
-                if (result && typeof result.ok === 'boolean') patch({ systemSound: result.ok })
+              callHost('test-toast', {}).then(function (result) {
+                if (result && typeof result.ok === 'boolean') patch({ toastOk: result.ok })
               })
             },
-            state.systemSound === true,
+            state.toastOk === true,
+          ),
+          button(
+            state.toast ? '通知：开' : '通知：关',
+            function () {
+              callHost('set-toast', { enabled: !state.toast }).then(function (result) {
+                if (result && typeof result.toast === 'boolean') patch({ toast: result.toast })
+              })
+            },
+            state.toast,
           ),
           button(
             state.muted ? '取消静音' : '静音',
@@ -515,12 +550,13 @@ return {
             },
           }),
         ]),
+        React.createElement('div', { className: 'dac-note', key: 'toast-note' }, toastNote),
         React.createElement('div', { className: 'dac-note', key: 'note' }, fallbackNote),
         React.createElement(
           'div',
           { className: 'dac-note', key: 'identity' },
           state.identityAvailable
-            ? '弹窗内容：DSH + 工作区 + 会话名 + 主会话/子代理，全部由 Host 编码计算'
+            ? '两个弹窗内容一致：DSH + 工作区 + 会话名 + 主会话/子代理，均由 Host 编码计算'
             : 'Host 未提供会话/工作区服务，弹窗身份字段会退化为占位值',
         ),
         state.error ? React.createElement('div', { className: 'dac-note', key: 'err' }, '错误：' + state.error) : null,
