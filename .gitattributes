@@ -1,0 +1,4 @@
+# These files are plugin function BODIES: their exact bytes are what gets handed
+# to cordis_define, so keep line endings stable across platforms.
+* text=auto eol=lf
+*.wav binary
