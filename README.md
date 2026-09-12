@@ -16,12 +16,13 @@ composition、重建 web 产物并重启。动态插件路线一轮 `cordis_defi
 
 代价：**DSH 进程重启后需要重新运行一次**（动态包只存在于当前进程）。
 
-## 两个界面
+## 三个界面
 
 | 位置 | 内容 |
 | --- | --- |
-| `tool.view.cordis`（对话里的 `cordis_run` 卡片内） | 控制面板：试听、系统音测试、静音、兜底开关、音量、最近 12 条信号日志 |
-| `shell.overlay`（右下角固定浮层） | 通知卡栈：最新优先，7 秒自动消失，点击关闭，最多同时 4 张 |
+| **Windows 通知（消息中心）** | 由 **Host 半边**发出，页面不在屏幕上也能到达。通知本身**静音**，声音仍由下面的铃声负责。署名显示为 DSH |
+| `shell.overlay`（右下角固定浮层） | 通知卡栈：最新优先，12 秒自动消失，最多同时 4 张。**点卡片关掉这一张，点页面任何别处关掉全部** |
+| `tool.view.cordis`（对话里的 `cordis_run` 卡片内） | 控制面板：试听、测试通知、通知开关、静音、兜底开关、音量、最近 12 条信号日志 |
 
 通知卡内容全部**由编码计算**，不涉及任何模型调用：
 
@@ -105,7 +106,8 @@ $p = New-Object System.Media.SoundPlayer 'C:\Windows\Media\Windows Notify System
 | --- | --- |
 | `src/host.js` | Host 半边源码。**文件内容就是 `code.host`** 的函数体原文 |
 | `src/client.js` | Client 半边源码。**文件内容就是 `code.client`** 的函数体原文 |
-| `scripts/check.mjs` | 按 DSH 真实求值方式做的语法校验 |
+| `scripts/check.mjs` | 按 DSH 真实求值方式做的语法校验，外加 `utf16leBase64` 与 Node `Buffer` 的对照测试 |
+| `scripts/toast-e2e.mjs` | 系统通知链路的端到端验证：用同一个编码器生成与插件一致的 `-EncodedCommand` |
 
 两边都是"返回 Cordis Plugin 的普通 JavaScript 函数体"：宿主分别用 `node:vm`
 沙箱和浏览器闭包求值，因此没有 TypeScript、没有 `import`/`require`、没有 JSX，
@@ -118,6 +120,27 @@ $p = New-Object System.Media.SoundPlayer 'C:\Windows\Media\Windows Notify System
 ```
 node scripts/check.mjs
 ```
+
+## 验证系统通知链路
+
+`scripts/toast-e2e.mjs` 用 `src/host.js` 里**同一个**编码器（按 region 标记抽取，而不是另写
+一份可能各自腐坏）生成与插件**完全一致**的 `-EncodedCommand`。这一步很有必要，因为
+**spawn 成功只说明 PowerShell 起来了，说明不了通知真的显示了** —— 编码坏掉同样是
+"没报错、也没弹出来"。
+
+```powershell
+# 真的弹一条通知，内容与插件一致（含中文与特殊字符），应当没有声音
+$b64 = (node scripts/toast-e2e.mjs).Trim()
+powershell -NoProfile -NonInteractive -EncodedCommand $b64
+
+# 只做往返校验、不弹通知：把 PowerShell 实际解析到的 XML 文本按 UTF-8 写回文件
+$b64 = (node scripts/toast-e2e.mjs --dump).Trim()
+powershell -NoProfile -NonInteractive -EncodedCommand $b64
+Get-Content toast-roundtrip.txt
+```
+
+往返校验正是当初定位编码坑的手段：中文、`·`、单双引号、`&<>` 必须逐字还原。
+加 `--show-script` 会先把将要执行的 PowerShell 脚本打到 stderr，便于排查。
 
 ## 运行方式
 

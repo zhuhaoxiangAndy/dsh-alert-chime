@@ -2,3 +2,6 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Output of scripts/toast-e2e.mjs --dump
+toast-roundtrip.txt
