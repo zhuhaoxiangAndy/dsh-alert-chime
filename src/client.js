@@ -18,6 +18,11 @@
  * Why stale signals are dropped: after a throttle gap the poll can deliver a
  * batch minutes late; chiming then would be noise, and the Host already covered
  * it. Those entries still land in the panel log.
+ *
+ * Two surfaces, both rendered from encoded data only (no model is involved):
+ *   - a control panel in tool.view.cordis
+ *   - a bottom-right toast stack in shell.overlay, one card per alert, showing
+ *     app / workspace / session / main-or-subagent, all computed Host-side.
  */
 
 return {
@@ -27,6 +32,8 @@ return {
     const STALE_MS = 5000
     const COALESCE_MS = 250
     const LOG_MAX = 12
+    const TOAST_MS = 7000
+    const TOAST_MAX = 4
 
     /** Two-note chimes: sine tones, no audio assets to fetch or decode. */
     const TONES = {
@@ -47,17 +54,20 @@ return {
     let inFlight = false
     let lastChimeAt = 0
     let logId = 0
+    let toastId = 0
 
     const state = {
       muted: false,
       fallback: true,
       shellAvailable: false,
+      identityAvailable: false,
       systemSound: null,
       audioAvailable: true,
       chime: null,
       volume: 0.6,
       error: '',
       log: [],
+      toasts: [],
     }
 
     const subscribers = new Set()
@@ -79,6 +89,10 @@ return {
 
     function text(error) {
       return error && typeof error.message === 'string' ? error.message : String(error)
+    }
+
+    function toText(value, fallback) {
+      return typeof value === 'string' && value !== '' ? value : fallback
     }
 
     // ---------------------------------------------------------------- audio ---
@@ -169,6 +183,55 @@ return {
       }
     }
 
+    // ---------------------------------------------------------------- toast ---
+
+    /** '主会话' or '子代理 L1 #2' — every part comes from the Host's encoded fields. */
+    function roleText(toast) {
+      if (toast.role !== 'subagent') return '主会话'
+      const parts = ['子代理']
+      if (toast.depth > 0) parts.push('L' + toast.depth)
+      if (toast.index > 0) parts.push('#' + toast.index)
+      return parts.join(' ')
+    }
+
+    function dismissToast(id) {
+      for (let i = 0; i < state.toasts.length; i += 1) {
+        if (state.toasts[i].id !== id) continue
+        const gone = state.toasts.splice(i, 1)[0]
+        if (gone && typeof gone.dispose === 'function') gone.dispose()
+        notify()
+        return
+      }
+    }
+
+    function showToast(signal, kind, detail) {
+      toastId += 1
+      const toast = {
+        id: toastId,
+        kind: kind,
+        at: typeof signal.at === 'number' ? signal.at : Date.now(),
+        app: toText(signal.app, 'DSH'),
+        workspace: toText(signal.workspace, '未知工作区'),
+        session: toText(signal.session, '未命名会话'),
+        role: signal.role === 'subagent' ? 'subagent' : 'main',
+        depth: typeof signal.depth === 'number' ? signal.depth : 0,
+        index: typeof signal.index === 'number' ? signal.index : 0,
+        detail: detail,
+      }
+
+      state.toasts.unshift(toast)
+      while (state.toasts.length > TOAST_MAX) {
+        const dropped = state.toasts.pop()
+        if (dropped && typeof dropped.dispose === 'function') dropped.dispose()
+      }
+      toast.dispose = ctx.timeout(function () {
+        dismissToast(toast.id)
+      }, TOAST_MS)
+      notify()
+    }
+
+    // -------------------------------------------------------------- signals ---
+
     function applySignal(signal) {
       if (!signal || typeof signal !== 'object') return
       const kind = typeof signal.kind === 'string' ? signal.kind : 'idle'
@@ -182,6 +245,11 @@ return {
 
       if (state.muted) return
       if (at > 0 && Date.now() - at > STALE_MS) return
+
+      // The visual channel is shown for every fresh alert, not only when audio
+      // succeeded: if autoplay policy blocks the chime, the toast is the only
+      // thing this page can still deliver.
+      showToast(signal, kind, detail)
 
       const now = Date.now()
       if (now - lastChimeAt < COALESCE_MS) return
@@ -211,6 +279,7 @@ return {
             muted: typeof result.muted === 'boolean' ? result.muted : state.muted,
             fallback: typeof result.fallback === 'boolean' ? result.fallback : state.fallback,
             shellAvailable: result.shellAvailable === true,
+            identityAvailable: result.identityAvailable === true,
             systemSound: typeof result.soundOk === 'boolean' ? result.soundOk : null,
           })
         },
@@ -267,6 +336,26 @@ return {
           '.dac-when{flex:0 0 auto;opacity:.55;font-variant-numeric:tabular-nums;font-size:11px}',
           '.dac-detail{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}',
           '.dac-empty{opacity:.55;border-top:none}',
+          // Toast stack. shell.overlay is click-through, so the container stays
+          // pointer-events:none and each card opts back in.
+          '@keyframes dac-toast-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}',
+          '.dac-toasts{position:fixed;right:16px;bottom:16px;z-index:40;display:flex;flex-direction:column;gap:8px;',
+          'align-items:flex-end;pointer-events:none;max-width:min(360px,46vw)}',
+          '.dac-toast{pointer-events:auto;cursor:pointer;min-width:250px;max-width:100%;box-sizing:border-box;',
+          'font:12px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#f4f4f5;',
+          'background:rgba(24,24,27,.94);border:1px solid rgba(255,255,255,.14);border-left:3px solid #2ecc71;',
+          'border-radius:10px;padding:9px 11px;box-shadow:0 10px 28px rgba(0,0,0,.34);',
+          'animation:dac-toast-in .18s ease-out}',
+          '.dac-toast[data-kind="approval"]{border-left-color:#f1c40f}',
+          '.dac-toast[data-kind="question"]{border-left-color:#3498db}',
+          '.dac-toast-head{display:flex;align-items:center;gap:7px;margin-bottom:4px}',
+          '.dac-toast-app{font-weight:600;letter-spacing:.04em;padding:0 6px;border-radius:5px;',
+          'background:rgba(255,255,255,.14)}',
+          '.dac-toast-kind{font-weight:600}',
+          '.dac-toast-close{margin-left:auto;opacity:.5;font-size:14px;line-height:1}',
+          '.dac-toast-row{opacity:.86;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+          '.dac-toast-detail{margin-top:3px;padding-top:3px;border-top:1px solid rgba(255,255,255,.12);opacity:.72;',
+          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
         ].join(''),
       )
     })
@@ -305,6 +394,45 @@ return {
     function clock(at) {
       if (at <= 0) return '--:--:--'
       return new Date(at).toLocaleTimeString()
+    }
+
+    function Toasts() {
+      useVersion()
+      if (state.toasts.length === 0) return null
+
+      return React.createElement(
+        'div',
+        { className: 'dac-toasts' },
+        state.toasts.map(function (toast) {
+          return React.createElement(
+            'div',
+            {
+              key: toast.id,
+              className: 'dac-toast',
+              'data-kind': toast.kind,
+              title: '点击关闭',
+              onClick: function () {
+                dismissToast(toast.id)
+              },
+            },
+            [
+              React.createElement('div', { className: 'dac-toast-head', key: 'head' }, [
+                React.createElement('span', { className: 'dac-toast-app', key: 'app' }, toast.app),
+                React.createElement('span', { className: 'dac-toast-kind', key: 'kind' }, LABELS[toast.kind] || toast.kind),
+                React.createElement('span', { className: 'dac-toast-close', key: 'close' }, '×'),
+              ]),
+              React.createElement('div', { className: 'dac-toast-row', key: 'workspace' }, '工作区 · ' + toast.workspace),
+              React.createElement('div', { className: 'dac-toast-row', key: 'session' }, '会话 · ' + toast.session),
+              React.createElement(
+                'div',
+                { className: 'dac-toast-row', key: 'role' },
+                '身份 · ' + roleText(toast) + ' · ' + clock(toast.at),
+              ),
+              toast.detail ? React.createElement('div', { className: 'dac-toast-detail', key: 'detail' }, toast.detail) : null,
+            ],
+          )
+        }),
+      )
     }
 
     function Panel() {
@@ -388,6 +516,13 @@ return {
           }),
         ]),
         React.createElement('div', { className: 'dac-note', key: 'note' }, fallbackNote),
+        React.createElement(
+          'div',
+          { className: 'dac-note', key: 'identity' },
+          state.identityAvailable
+            ? '弹窗内容：DSH + 工作区 + 会话名 + 主会话/子代理，全部由 Host 编码计算'
+            : 'Host 未提供会话/工作区服务，弹窗身份字段会退化为占位值',
+        ),
         state.error ? React.createElement('div', { className: 'dac-note', key: 'err' }, '错误：' + state.error) : null,
         React.createElement('ul', { className: 'dac-log', key: 'log' }, entries),
       ])
@@ -397,6 +532,11 @@ return {
     if (slots !== undefined) {
       slots.inject('tool.view.cordis', function () {
         return slots.register({ name: 'tool.view.cordis', key: 'self' }, Panel)
+      })
+      // shell.overlay is root-scoped and additive: a fresh id sits beside the
+      // shipped entries instead of replacing one.
+      slots.inject('shell.overlay', function () {
+        return slots.register({ name: 'shell.overlay', id: 'dsh-alert-chime-toasts', order: 40 }, Toasts)
       })
     }
 
