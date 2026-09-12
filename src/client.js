@@ -207,6 +207,20 @@ return {
       }
     }
 
+    /**
+     * Drop every visible popup at once. Used by the click-anywhere-else gesture:
+     * a popup you cannot get rid of without hunting for a small x is worse than
+     * no popup, and the stack can hold four of them.
+     */
+    function dismissAllToasts() {
+      if (state.toasts.length === 0) return
+      while (state.toasts.length > 0) {
+        const gone = state.toasts.pop()
+        if (gone && typeof gone.dispose === 'function') gone.dispose()
+      }
+      notify()
+    }
+
     function showToast(signal, kind, detail) {
       toastId += 1
       const toast = {
@@ -311,6 +325,29 @@ return {
         doc.addEventListener('pointerdown', unlock, { once: true })
         return function () {
           doc.removeEventListener('pointerdown', unlock)
+        }
+      })
+    }
+
+    // Clicking anywhere other than a popup closes the whole stack.
+    //
+    // Capture phase on purpose: the app's own handlers run before this on the
+    // bubble phase, and any of them stopping propagation would otherwise leave
+    // the popups stuck on screen. A click that lands ON a card is skipped here
+    // and left to that card's own handler, which closes just that one - so the
+    // two gestures stay distinguishable.
+    if (doc !== undefined && typeof doc.addEventListener === 'function') {
+      const onPointerDownAnywhere = function (event) {
+        if (state.toasts.length === 0) return
+        const target = event === null || event === undefined ? undefined : event.target
+        const insideCard = target && typeof target.closest === 'function' ? target.closest('.dac-toast') : null
+        if (insideCard) return
+        dismissAllToasts()
+      }
+      ctx.effect(function () {
+        doc.addEventListener('pointerdown', onPointerDownAnywhere, true)
+        return function () {
+          doc.removeEventListener('pointerdown', onPointerDownAnywhere, true)
         }
       })
     }
