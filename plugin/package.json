@@ -1,0 +1,27 @@
+{
+  "name": "dsh-alert-chime",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Host-side alert chime and Windows notification for the DeepSeek Harness: chimes when an approval prompt is waiting, when ask_user_question runs, and when a run ends and the agent goes idle.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "notification",
+    "sound"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  }
+}

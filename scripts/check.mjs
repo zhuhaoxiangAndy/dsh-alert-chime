@@ -1,24 +1,27 @@
 /**
- * Verifies both halves the way DSH itself does, then verifies the one piece of
- * hand-rolled bit twiddling that a mistake in would be invisible until a toast
- * came out garbled.
+ * Verifies everything the two shipping forms depend on.
  *
- * 1. Syntax. `node --check` cannot be used on `src/*.js` directly: those files
- *    are function BODIES and contain a top-level `return`, which is a syntax
- *    error in a script. The parameter lists below mirror the two real
- *    evaluators (`dsh-cordis-host-runner` sandbox / `dsh-cordis-client-runner`
- *    closure), so a name the sandbox shadows is shadowed here too.
+ * 1. Syntax of the dynamic halves. `node --check` cannot be used on `src/*.js`:
+ *    those files are function BODIES and contain a top-level `return`, which is
+ *    a syntax error in a script. The parameter lists mirror the two real
+ *    evaluators, so a name the sandbox shadows is shadowed here too.
  *
- * 2. Encoder. `utf16leBase64` is extracted from src/host.js between its region
- *    markers and round-tripped against Node's own Buffer encoder. It has to be
- *    hand-rolled because the sandbox's `btoa` is UTF-8 based, and getting it
- *    wrong corrupts every non-ASCII toast.
+ * 2. The plugin package actually loads and exports the Cordis contract
+ *    (`name`, `inject`, `apply`). Importing it is a real load test: the module
+ *    has no side effects at load time, so this is safe, and it catches a broken
+ *    export that a composition row would otherwise reject at mount.
+ *
+ * 3. The UTF-16LE base64 encoder, in EVERY file that carries one, extracted
+ *    between its region markers and round-tripped against Node's own Buffer
+ *    encoder. There are two copies by necessity - a dynamic half cannot import
+ *    from a module and vice versa - so checking only one would let the other rot
+ *    silently, and a wrong encoder corrupts every non-ASCII notification.
  *
  * Usage: node scripts/check.mjs
  */
 
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -43,93 +46,137 @@ const CLIENT_PARAMS = [
   'Buffer',
 ]
 
-const TARGETS = [
+/** Function-body halves evaluated in a sandbox / closure. */
+const BODY_TARGETS = [
   { file: 'src/host.js', params: HOST_PARAMS },
   { file: 'src/client.js', params: CLIENT_PARAMS },
 ]
 
+/** Every file that carries a copy of the encoder. */
+const ENCODER_SOURCES = ['src/host.js', 'plugin/lib/index.js']
+
+const PLUGIN_MODULE = 'plugin/lib/index.js'
+
+const START = '// #region utf16le-base64'
+const END = '// #endregion utf16le-base64'
+
 let failed = 0
 
-// --- 1) syntax ------------------------------------------------------------
+function fail(message) {
+  failed += 1
+  console.error(`FAIL  ${message}`)
+}
+
+// --- 1) syntax of the dynamic halves, caching their sources ---------------
 
 const sources = new Map()
 
-for (const target of TARGETS) {
+for (const target of BODY_TARGETS) {
   const source = readFileSync(join(root, target.file), 'utf8')
   sources.set(target.file, source)
   const wrapped = `return (async () => {\n${source}\n})()`
   try {
     // Parsing only: the body is never executed here.
     new Function(...target.params, wrapped)
-    const lines = source.split('\n').length
-    console.log(`ok    syntax      ${target.file}  ${lines} lines, ${target.params.length} closure symbols`)
+    console.log(`ok    syntax      ${target.file}  ${source.split('\n').length} lines, ${target.params.length} closure symbols`)
   } catch (error) {
-    failed += 1
-    console.error(`FAIL  syntax      ${target.file}: ${error.message}`)
+    fail(`syntax      ${target.file}: ${error.message}`)
   }
 }
 
-// --- 2) the UTF-16LE base64 encoder --------------------------------------
+// --- 2) the plugin package loads and exports the Cordis contract ----------
 
-const START = '// #region utf16le-base64'
-const END = '// #endregion utf16le-base64'
+try {
+  const loaded = await import(pathToFileURL(join(root, PLUGIN_MODULE)).href)
 
-const host = sources.get('src/host.js') ?? ''
-const from = host.indexOf(START)
-const to = host.indexOf(END)
+  const problems = []
+  if (typeof loaded.name !== 'string' || loaded.name === '') problems.push('name is not a non-empty string')
+  if (!Array.isArray(loaded.inject)) problems.push('inject is not an array')
+  if (typeof loaded.apply !== 'function') problems.push('apply is not a function')
 
-if (from < 0 || to < 0 || to <= from) {
-  failed += 1
-  console.error(`FAIL  encoder     region markers ${START} / ${END} not found in src/host.js`)
-} else {
-  let encode
-  try {
-    encode = new Function(`${host.slice(from, to)}\nreturn utf16leBase64`)()
-  } catch (error) {
-    failed += 1
-    console.error(`FAIL  encoder     could not build utf16leBase64: ${error.message}`)
+  if (problems.length === 0) {
+    console.log(`ok    plugin      ${PLUGIN_MODULE}  name=${loaded.name} inject=[${loaded.inject.join(', ')}] apply=fn`)
+  } else {
+    fail(`plugin      ${PLUGIN_MODULE}: ${problems.join('; ')}`)
   }
 
-  if (encode) {
-    const cases = [
-      '',
-      'A',
-      'AB',
-      'ABC',
-      'ABCD',
-      'DSH',
-      '审批',
-      'DSH · 提问',
-      '工作区 · e:\\项目\\dsh-alert-chime',
-      '会话 · 提示音插件开发',
-      `mixed 'single' and "double" and & < > quotes`,
-      'emoji 🚀 tail',
-      '日本語と한국어とРусский',
-      'x'.repeat(200),
-    ]
+  sources.set(PLUGIN_MODULE, readFileSync(join(root, PLUGIN_MODULE), 'utf8'))
+} catch (error) {
+  fail(`plugin      ${PLUGIN_MODULE} failed to load: ${error.message}`)
+}
 
-    const mismatches = []
-    for (const value of cases) {
-      const expected = Buffer.from(value, 'utf16le').toString('base64')
-      let actual
-      try {
-        actual = encode(value)
-      } catch (error) {
-        actual = `threw: ${error.message}`
-      }
-      if (actual !== expected) mismatches.push({ value, expected, actual })
-    }
+// --- 3) the encoder, in every copy ---------------------------------------
 
-    if (mismatches.length === 0) {
-      console.log(`ok    encoder     utf16leBase64 matches Buffer utf16le on ${cases.length} cases`)
-    } else {
-      failed += 1
-      for (const mismatch of mismatches) {
-        console.error(`FAIL  encoder     ${JSON.stringify(mismatch.value)}`)
-        console.error(`                    expected ${mismatch.expected}`)
-        console.error(`                    actual   ${mismatch.actual}`)
-      }
+const CASES = [
+  '',
+  'A',
+  'AB',
+  'ABC',
+  'ABCD',
+  'DSH',
+  '审批',
+  'DSH · 提问',
+  '工作区 · e:\\项目\\dsh-alert-chime',
+  '会话 · 提示音插件开发',
+  `mixed 'single' and "double" and & < > quotes`,
+  'emoji 🚀 tail',
+  '日本語と한국어とРусский',
+  'x'.repeat(200),
+]
+
+const built = []
+
+for (const file of ENCODER_SOURCES) {
+  const source = sources.get(file) ?? readFileSync(join(root, file), 'utf8')
+  const from = source.indexOf(START)
+  const to = source.indexOf(END)
+
+  if (from < 0 || to <= from) {
+    fail(`encoder     region markers ${START} / ${END} not found in ${file}`)
+    continue
+  }
+
+  let encode
+  try {
+    encode = new Function(`${source.slice(from, to)}\nreturn utf16leBase64`)()
+    built.push({ file, encode })
+  } catch (error) {
+    fail(`encoder     could not build utf16leBase64 from ${file}: ${error.message}`)
+    continue
+  }
+
+  const mismatches = []
+  for (const value of CASES) {
+    const expected = Buffer.from(value, 'utf16le').toString('base64')
+    let actual
+    try {
+      actual = encode(value)
+    } catch (error) {
+      actual = `threw: ${error.message}`
     }
+    if (actual !== expected) mismatches.push({ value, expected, actual })
+  }
+
+  if (mismatches.length === 0) {
+    console.log(`ok    encoder     ${file}  matches Buffer utf16le on ${CASES.length} cases`)
+  } else {
+    fail(`encoder     ${file}: ${mismatches.length} mismatch(es)`)
+    for (const mismatch of mismatches) {
+      console.error(`                    ${JSON.stringify(mismatch.value)}`)
+      console.error(`                    expected ${mismatch.expected}`)
+      console.error(`                    actual   ${mismatch.actual}`)
+    }
+  }
+}
+
+// --- 4) the encoder copies must not drift apart --------------------------
+
+if (built.length === 2) {
+  const drifted = CASES.filter((value) => built[0].encode(value) !== built[1].encode(value))
+  if (drifted.length === 0) {
+    console.log(`ok    encoder     ${built[0].file} and ${built[1].file} agree on all cases`)
+  } else {
+    fail(`encoder     ${built[0].file} and ${built[1].file} disagree on ${drifted.length} case(s)`)
   }
 }
 
