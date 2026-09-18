@@ -87,6 +87,7 @@ const ALERT_GAP_MS = 1000
 export function apply(ctx, config = {}) {
   const soundEnabled = config.sound !== false
   const toastEnabled = config.toast !== false
+  const logEnabled = config.log !== false
 
   const shell = ctx.get('shell')
   const sessionTitle = ctx.get('sessionTitle')
@@ -158,6 +159,22 @@ export function apply(ctx, config = {}) {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;')
+  }
+
+  /**
+   * A statement that appends one line to the alert log.
+   *
+   * This exists because a host row's activation is otherwise unobservable from
+   * outside the process: the loader's own console is not reachable, and the
+   * dynamic-plugin inspector only lists dynamic Packages. A file that says
+   * "mounted at ..." turns "did it load?" into a question with an answer.
+   *
+   * `$env:TEMP` is resolved by PowerShell rather than guessed here: DSH hands
+   * its children a private temp directory, so the path is not a constant.
+   */
+  function logStatement(line) {
+    const safe = String(line).replace(/'/g, "''").replace(/[\r\n]+/g, ' ')
+    return "Add-Content -Path (Join-Path $env:TEMP 'dsh-alert-chime.log') -Value ('" + safe + "') -Encoding UTF8"
   }
 
   function spawnPowerShell(script, label) {
@@ -314,6 +331,16 @@ export function apply(ctx, config = {}) {
 
     const parts = []
 
+    // Travelling inside the SAME process as the alert: one extra statement, no
+    // extra spawn, and it leaves behind evidence that this alert really ran.
+    if (logEnabled) {
+      parts.push(
+        logStatement(
+          kind + ' ' + new Date(at).toISOString() + ' ' + (identity.workspace || '-') + ' / ' + (identity.session || '-'),
+        ),
+      )
+    }
+
     if (toastEnabled) {
       let xml = '<toast><visual><binding template="ToastGeneric">'
       xml += '<text>' + xmlEscape(title) + '</text>'
@@ -415,4 +442,9 @@ export function apply(ctx, config = {}) {
   })
 
   ctx.logger?.info?.('dsh-alert-chime mounted (toast=%s sound=%s)', toastEnabled, soundEnabled)
+
+  // The mount marker: proof, readable from outside, that this row activated.
+  if (logEnabled) {
+    spawnPowerShell(logStatement('mounted ' + new Date().toISOString()), 'mount marker')
+  }
 }
