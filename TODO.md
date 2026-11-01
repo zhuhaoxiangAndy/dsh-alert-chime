@@ -1,5 +1,20 @@
 # TODO
 
+> **2026-11-01 状态更正 —— DSH 已升级到 Desktop 0.2.1-rc.5，下文"已安装"的说法已失效**
+>
+> - **动态插件路线不可用**：这版里 `cordis_define` / `cordis_run` / `cordis_inspect_self`
+>   等工具都不存在了。
+> - **便携版插件装错了地方**：当时装进 `web` 与 `dsh-tui` 两个 profile，而当前会话跑在
+>   **desktop** profile。事后核查：`web` 里的副本已消失，`dsh-tui` 里还在但用不到。
+> - **desktop profile 禁止手工安装**：它被 Electron 独占，官方明确说手改 `package.json`
+>   或复制 `node_modules` 一律无效且可能弄崩；桌面端插件只能在界面里装（侧栏 → 设置 → 插件）。
+> - **已知与 0.2.1-rc.5 不兼容**：`dshmarket@1.47.0`、`@deepseek-harness-tui/dsh-tui@0.10.1`。
+>   所以"从市场装一个提示音插件"这条路本身也可能不通。
+> - 结论：**提示音仍未恢复**。已交付的替代能力见 `tools/README.md`（音符描述 → WAV），
+>   可以自行做成系统提示音或由将来的集成播放。
+>
+> 以下 2026-08 的内容保留为当时的设计记录。
+
 ## 暂缓：持久化（用户 2026-08-14 决定先不处理）
 
 当前形态是**动态 Cordis 插件**：只活在当前 DSH 进程里。DSH 重启后，提示音、Windows
