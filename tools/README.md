@@ -61,6 +61,44 @@ node tools/smoke.mjs
 
 `node tools/smoke.mjs` 会生成 `audio/` 下四个示例并对每个断言：容器可解析、时长与描述一致、峰值有效且无削波；另外四个负向检查（无法识别的音名、无法识别的时值、空描述、非 WAV 输入）必须抛错。全部通过才算 PASS。
 
-## 和提示音的关系
+## 不依赖插件：监听会话日志触发（`watch.mjs`）
 
-生成出来的 WAV 可以直接当系统提示音（Windows：设置 → 个性化 → 主题 → 声音，或 `System.Media.SoundPlayer` 播放）。至于"什么时候响"，那需要一个能挂进 DSH 的插件 —— 见仓库根的 `README.md` 与 `TODO.md`。
+插件那条路在 0.2.1-rc.5 里已经断了（动态插件工具不存在，desktop profile 又只能从界面装插件）。但**会话日志是磁盘上已经存在的稳定事实**，所以可以直接跟着它。
+
+```powershell
+# 跟着最新的会话日志，有事就响（保持这个窗口开着）
+node tools/watch.mjs
+
+# 只看它「本来会对哪些事件触发」，不播放声音
+node tools/watch.mjs --self-test
+
+# 固定某一个日志、指定声音、指定轮询间隔
+node tools/watch.mjs --session-log "<...>\session.v4.jsonl.zstd" --wav audio/idle.wav --interval 700
+```
+
+会触发的事件：
+
+| 事件 | 含义 | 声音 |
+| --- | --- | --- |
+| `approval/asked` | 有审批在等你点 | `--wav` |
+| `turn/end` | 一轮跑完 | `--wav` |
+| `tool/call` 且 `data.name === 'ask_user_question'` | 向你提问 | `--wav` |
+
+### 这个方案依赖的几个实测事实
+
+1. 日志路径：`$DSH_HOME/sessions/<工作区slug>/<session-id>/session.v4.jsonl.zstd`。
+2. **日志是逐帧追加的 zstd**：一次性 `zstdDecompressSync` 或流式 `createZstdDecompress` **都只得到第一帧**（实测 1.3 MB 只解出 233 字符的会话头）。必须按帧魔数 `28 B5 2F FD` 切分后逐帧解压 —— 实测 **140/140 帧全部解压成功**，恢复 1089 个事件。
+3. 事件词表里有 `approval/asked`、`turn/end`、`tool/call`；工具名在 `event.data.name`。
+4. 只解**新增帧**（按字节偏移追踪），稳态下每次只读末尾几个字节；首次启动**跳过历史**，避免把一场会话里的旧告警全部补响一遍。
+5. 正在写的最后一帧会解压失败，视为"未完成"，下一轮重试。
+
+### 已知局限（诚实说明）
+
+- **强耦合于日志格式**：`session.v4` 里字段变了就要跟着改。这是它相对插件的代价，好处是升级不会"卸载"它。
+- **默认跟"全局最新"的那个日志**：多会话同时干活时可能跟错会话，用 `--session-log` 固定。
+- 靠轮询（默认 700 ms），有不到一秒的延迟。
+- 只在**你手动保持它运行**时有效；要开机自启需要自己加计划任务。
+
+## 和系统提示音的关系
+
+生成出来的 WAV 也可以直接当系统提示音：Windows 设置 → 个性化 → 主题 → 声音，把某事件的声音指到你的 WAV 上。这条路零脚本、零进程，只是触发时机由 Windows 决定，不由 DSH 决定。
